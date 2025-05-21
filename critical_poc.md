@@ -363,7 +363,7 @@ Withdrawal succeeded after cooldown bypass!
 
 ---
 
-### HIGH: Duplicate Address Withdrawals
+### HIGH (could be judged MEDIUM): Duplicate Address Withdrawals 
 
 **Description:** The contract's withdrawal function does not validate for duplicate MetaCoin addresses in the input array, allowing an attacker to artificially inflate withdrawal amounts by repeating the same MetaCoin address multiple times.
 
