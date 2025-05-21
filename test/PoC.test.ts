@@ -2,22 +2,26 @@ import { HardhatEthersSigner } from "@nomicfoundation/hardhat-ethers/signers";
 import { ethers as hhethers } from "hardhat";
 import {IERC20Metadata, UpsideMetaCoin, UpsideProtocol, UpsideStakingStub} from "../types";
 import { expect } from "chai";
-import { MaliciousERC20 } from "../types/contracts";
 
 describe("C4 PoC Test Suite", function () {
   let signers: HardhatEthersSigner[];
   let owner: HardhatEthersSigner;
-  let user1: HardhatEthersSigner;
+  let user: HardhatEthersSigner;
+  let attacker: HardhatEthersSigner;
+  let user1: HardhatEthersSigner; 
 
   let stakingContract: UpsideStakingStub;
   let upsideProtocol: UpsideProtocol;
   let liquidityToken: IERC20Metadata;
-  let sampleLinkToken: UpsideMetaCoin;
+  let metaCoin: UpsideMetaCoin;
+  let sampleLinkToken: UpsideMetaCoin; 
 
   before(async function () {
     signers = await hhethers.getSigners();
     owner = signers[2];
-    user1 = signers[0];
+    user = signers[0];
+    attacker = signers[1];
+    user1 = signers[3];
 
     const upsideStakingStubFactory = await hhethers.getContractFactory("UpsideStakingStub");
     stakingContract = await upsideStakingStubFactory.connect(owner).deploy(owner.address);
